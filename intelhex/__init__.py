@@ -544,45 +544,9 @@ class IntelHex(object):
             raise ValueError("wrong eolstyle %s" % repr(eolstyle))
     _get_eol_textfile = staticmethod(_get_eol_textfile)
 
-    def write_hex_file(self, f, write_start_addr=True, eolstyle='native', byte_count=16):
-        """Write data to file f in HEX format.
-
-        @param  f                   filename or file-like object for writing
-        @param  write_start_addr    enable or disable writing start address
-                                    record to file (enabled by default).
-                                    If there is no start address in obj, nothing
-                                    will be written regardless of this setting.
-        @param  eolstyle            can be used to force CRLF line-endings
-                                    for output file on different platforms.
-                                    Supported eol styles: 'native', 'CRLF'.
-        @param byte_count           number of bytes in the data field
-        """
-        if byte_count > 255 or byte_count < 1:
-            raise ValueError("wrong byte_count value: %s" % byte_count)
-        fwrite = getattr(f, "write", None)
-        if fwrite:
-            fobj = f
-            fclose = None
-        else:
-            fobj = open(f, 'w')
-            fwrite = fobj.write
-            fclose = fobj.close
-
-        eol = IntelHex._get_eol_textfile(eolstyle, sys.platform)
-
-        # Translation table for uppercasing hex ascii string.
-        # timeit shows that using hexstr.translate(table)
-        # is faster than hexstr.upper():
-        # 0.452ms vs. 0.652ms (translate vs. upper)
-        if sys.version_info[0] >= 3:
-            # Python 3
-            table = bytes(range_l(256)).upper()
-        else:
-            # Python 2
-            table = ''.join(chr(i).upper() for i in range_g(256))
-
+    def write_start(self,fwrite,table,eol,fclose):
         # start address record if any
-        if self.start_addr and write_start_addr:
+        if self.start_addr :
             keys = dict_keys(self.start_addr)
             keys.sort()
             bin = array('B', asbytes('\0'*9))
@@ -622,6 +586,47 @@ class IntelHex(object):
                     fclose()
                 raise InvalidStartAddressValueError(start_addr=self.start_addr)
 
+    def write_hex_file(self, f, write_start_addr=True, eolstyle='native', byte_count=16, linear_mode=True,start_at_end=False,use_seg_as_linear=False):
+        """Write data to file f in HEX format.
+
+        @param  f                   filename or file-like object for writing
+        @param  write_start_addr    enable or disable writing start address
+                                    record to file (enabled by default).
+                                    If there is no start address in obj, nothing
+                                    will be written regardless of this setting.
+        @param  eolstyle            can be used to force CRLF line-endings
+                                    for output file on different platforms.
+                                    Supported eol styles: 'native', 'CRLF'.
+        @param byte_count           number of bytes in the data field
+        """
+        if byte_count > 255 or byte_count < 1:
+            raise ValueError("wrong byte_count value: %s" % byte_count)
+        fwrite = getattr(f, "write", None)
+        if fwrite:
+            fobj = f
+            fclose = None
+        else:
+            fobj = open(f, 'w')
+            fwrite = fobj.write
+            fclose = fobj.close
+
+        eol = IntelHex._get_eol_textfile(eolstyle, sys.platform)
+
+        # Translation table for uppercasing hex ascii string.
+        # timeit shows that using hexstr.translate(table)
+        # is faster than hexstr.upper():
+        # 0.452ms vs. 0.652ms (translate vs. upper)
+        if sys.version_info[0] >= 3:
+            # Python 3
+            table = bytes(range_l(256)).upper()
+        else:
+            # Python 2
+            table = ''.join(chr(i).upper() for i in range_g(256))
+
+        if write_start_addr and not start_at_end:
+            #write start address
+            self.write_start(fwrite,table,eol,fclose)
+        
         # data
         addresses = dict_keys(self._buf)
         addresses.sort()
@@ -638,16 +643,21 @@ class IntelHex(object):
 
             cur_addr = minaddr
             cur_ix = 0
-
+            seg_base=0
             while cur_addr <= maxaddr:
                 if need_offset_record:
                     bin = array('B', asbytes('\0'*7))
                     bin[0] = 2      # reclen
                     bin[1] = 0      # offset msb
                     bin[2] = 0      # offset lsb
-                    bin[3] = 4      # rectyp
                     high_ofs = int(cur_addr>>16)
-                    b = divmod(high_ofs, 256)
+                    if linear_mode:
+                        bin[3] = 4      # rectyp
+                        b = divmod(high_ofs, 256)
+                    else:
+                        bin[3] = 2      # rectyp
+                        seg_base=cur_addr & 0xFFFF0
+                        b = divmod(cur_addr//16, 256)
                     bin[4] = b[0]   # msb of high_ofs
                     bin[5] = b[1]   # lsb of high_ofs
                     bin[6] = (-sum(bin)) & 0x0FF    # chksum
@@ -676,7 +686,11 @@ class IntelHex(object):
                         chain_len = 1               # real chain_len
 
                     bin = array('B', asbytes('\0'*(5+chain_len)))
-                    b = divmod(low_addr, 256)
+                    if linear_mode or use_seg_as_linear:
+                        b = divmod(low_addr, 256)
+                    else:
+                        b = divmod((cur_addr - seg_base) & 0xFFFF, 256)
+                    
                     bin[1] = b[0]   # msb of low_addr
                     bin[2] = b[1]   # lsb of low_addr
                     bin[3] = 0          # rectype
@@ -704,6 +718,10 @@ class IntelHex(object):
                     if high_addr > high_ofs:
                         break
 
+        if write_start_addr and start_at_end:
+            #write start address
+            self.write_start(fwrite,table,eol,fclose)
+        
         # end-of-file record
         fwrite(":00000001FF"+eol)
         if fclose:
@@ -713,10 +731,12 @@ class IntelHex(object):
         """Write data to hex or bin file. Preferred method over tobin or tohex.
 
         @param  fobj        file name or file-like object
-        @param  format      file format ("hex" or "bin")
+        @param  format      file format ("hex" or "hex16" or "bin")
         """
         if format == 'hex':
             self.write_hex_file(fobj)
+        elif format == 'hex16':
+            self.write_hex_file(fobj,linear_mode=False)
         elif format == 'bin':
             self.tobinfile(fobj)
         else:

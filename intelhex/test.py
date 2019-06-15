@@ -331,6 +331,16 @@ hex64k = """:020000040000FA
 :0100000002FD
 :00000001FF
 """
+
+
+hex16_64k = """:020000020000FC
+:0100000001FE
+:020000021000EC
+:0100000002FD
+:00000001FF
+"""
+
+
 data64k = {0: 1, 0x10000: 2}
 
 
@@ -551,6 +561,15 @@ class TestIntelHex(TestIntelHexBase):
         sio.close()
         self.assertEqualWrittenData(hex_simple, s)
 
+    def test_write_shexfile(self):
+        ih = intelhex.IntelHex(data64k)
+        # new API: .tofile universal method
+        sio = StringIO()
+        ih.tofile(sio, format='hex16')
+        s = sio.getvalue()
+        sio.close()
+        self.assertEqualWrittenData(hex16_64k, s)
+        
     def test_write_hex_bug_341051(self):
         ih = intelhex.IntelHex(StringIO(hex_bug_lp_341051))
         sio = StringIO()
